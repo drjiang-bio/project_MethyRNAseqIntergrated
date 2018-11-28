@@ -1,20 +1,16 @@
 rm(list = ls());gc()
-setwd('/media/jun/Sync/TCGA_data/ESCA/rnaseq')
+library(magrittr)
+library(dplyr)
 options(stringsAsFactors = F)
+projectwd <- getwd() %>% print
+RNAseqd <- 'origin/rnaseq/'
 
 # 文件准备：1.path : 待整合原始数据（建议使用绝对路径）
 #           2.gdc_sheet ; gdc_sample_sheet文件
 #           3.annot : 注释文件（检查数据的缺失值及重复值）
-path <- '/media/jun/Sync/TCGA_data/ESCA/rnaseq/gdc_download_20181103/'
-gdc_sheet <- read.csv('../esca_gdc_sheet_pathology.csv')
-#
-annot <- read.csv('../hgnc_complete_subset_complete.csv')
-annot <- dplyr::arrange(annot, ensembl_gene_id)
-# 
-annot <- read.csv('../esemble_symbol.csv')
-annot <- dplyr::arrange(annot, gene_id)
+fpath <- paste0(projectwd, '/', RNAseqd, 'gdc_download_20181103/') %>% print
 
-annot <- read.csv('../')
+gdc_sheet <- read.csv('./origin/esca_gdc_sheet_pathology.csv')
 
 # 检查文件：1. path 为 gdc下载后解压的各文件夹的上一级目录
 #           2. gdc_sheet,annot 需和函数里的各参数一致（避免TCGA更新后各文件内容调整而出错）
@@ -56,46 +52,59 @@ load_tcga_gz <- function(lujing, guize = 'counts.gz$') {
 }
 
 ## 使用自定义函数1 批量读入数据（默认读入count数据，其他数据需要改guize参数）
-exprs <- load_tcga_gz(lujing = path)
+exprs <- load_tcga_gz(lujing = fpath)
 exprs <- data.frame(exprs, check.names = F)
 exprs[1:3,1:3]
-save(exprs, file = './result/exprs.RData')
+save(exprs, file = './result_RNAseq/exprs.RData')
+write.csv(exprs, file = './result_RNAseq/exprs.csv')
 
 # ------ 1.2 筛选鳞癌数据,构建分类表
-library(dplyr)
 sub_sheet <- filter(gdc_sheet, pathology == 'ESCC'| Sample.Type == 'Solid Tissue Normal' )
 sub_sheet <- sub_sheet[, c(1,8,9)]
 
-sub_sheet[grepl('Normal', sub_sheet$Sample.Type), 3] <- 'Normal'
-sub_sheet[!grepl('Normal', sub_sheet$Sample.Type), 3] <- 'ESCC'
+sub_sheet$Sample.Type <- ifelse(grepl('Normal', sub_sheet$Sample.Type), 
+                                'Normal', 'ESCC')
 # sub_sheet$Sample.ID <- gsub('-', '\\.', sub_sheet$Sample.ID)
-
 escc <- select(exprs, one_of(sub_sheet$Sample.ID))
-save(escc, file = './result/exprs_escc.RData')
+
+save(escc, file = './result_RNAseq/exprs_ESCC.RData')
+write.csv(escc, file = './result_RNAseq/exprs_ESCC.csv')
 
 group <- data.frame(id = names(escc))
 group$class <- sub_sheet[match(group$id, sub_sheet$Sample.ID), 3]
 group$class <- factor(group$class)
-save(group, file = './result/exprs_escc_pheno.RData')
+
+save(group, file = './result_RNAseq/exprs_ESCC_pheno.RData')
+write.csv(group, file = './result_RNAseq/exprs_ESCC_pheno.csv')
+
+#
+annot <- read.csv('./origin/hgnc_complete_subset_complete.csv')
+annot <- dplyr::arrange(annot, ensembl_gene_id)
+# 
+annot <- read.csv('./origin/esemble_symbol.csv')
+annot <- dplyr::arrange(annot, gene_id)
+
 
 # ----------------------------------------------
 # 2.差异分析DESeq2
 # ----------------------------------------------
 rm(list = ls());gc()
-library(DMwR)
+options(stringsAsFactors = F)
 library(DESeq2)
-library(RColorBrewer)
 library(BiocParallel)
 detectCores()
-register(MulticoreParam(11))
+register(MulticoreParam(6))
+library(amap)
+library(gplots)
+library(RColorBrewer)
 
-load('./result/exprs_escc.RData')
-load('./result/exprs_escc_pheno.RData')
+
+load('./result_RNAseq/exprs_ESCC.RData')
+load('./result_RNAseq/exprs_ESCC_pheno.RData')
 
 nrow(escc)
 escc <- escc[rowSums(escc)>5,]
 head(escc)[1:3]
-escc[, c(c('TCGA-V5-A7RC-06A','TCGA-LN-A5U6-01A'),'TCGA-XP-A8T6-01A')]
 
 # 2.1 构建DESeq2分类表(colData)
 group_list <- group$class
@@ -106,31 +115,7 @@ dds <- DESeqDataSetFromMatrix(countData = escc,
                               design = ~ group_list)
 # 2.3 差异分析
 dds <- DESeq(dds, parallel = T)
-## 2.3.1 返回标准化的数据
-normalized_counts <- counts(dds, normalized=TRUE)
-head(normalized_counts)[,1:3]
-normalized_counts_mad <- apply(normalized_counts, 1, mad)
-normalized_counts <- normalized_counts[order(normalized_counts_mad, decreasing=T), ]
-write.csv(normalized_counts, file="./result/exprs_escc_DESeq2_normalized.csv",
-          quote = F)
-## 2.3.2 log转换后的结果
-rld <- vst(dds, blind=FALSE)
-rlogMat <- assay(rld)
-rlogMat <- rlogMat[order(normalized_counts_mad, decreasing=T), ]
-write.csv(rlogMat, file="./result/exprs_escc_DESeq2_normalized_vst.csv",
-            quote=F)
-
-hmcol <- colorRampPalette(brewer.pal(9, "GnBu"))(100) # 生成颜色
-pearson_cor <- as.matrix(cor(rlogMat, method="pearson")) # 计算相关性pearson correlation
-library(amap)
-hc <- hcluster(t(rlogMat), method="pearson") # 层级聚类
-# 热图绘制
-pdf("./result/exprs_escc_DESeq2_normalized_vst.pdf", pointsize=10)
-heatmap.2(pearson_cor, Rowv=as.dendrogram(hc), symm=T, 
-          trace="none", col=hmcol, margins=c(11,11), 
-          main="The pearson correlation of each sample")
-dev.off()
-pca_data <- plotPCA(rld, intgroup=c("conditions"), returnData=T, ntop=5000)
+save(dds, file = './result_RNAseq/dds_ESCC.RData')
 
 ## 2.3.4  差异分析
 res_d <- results(dds, contrast=c("group_list", "ESCC", "Normal"))
@@ -138,52 +123,130 @@ res_d <- res_d[order(res_d$pvalue),]
 head(res_d)
 summary(res_d)
 dim(res_d)
-res_d <- na.omit(res_d)
+
 # 所有结果先进行输出
 res_d[1:3,1:3]
-write.csv(res_d, file="./result/diffAll_DESeq2.csv")
+save(res_d, file = './result_RNAseq/diffAll_DESeq2.RData')
+write.csv(res_d, file="./result_RNAseq/diffAll_DESeq2.csv")
 
 table(res_d$padj<0.05)
+table(res_d$pvalue < 0.05)
+
 diffSig_deseq2 <-subset(res_d, padj < 0.05 & abs(log2FoldChange) > 1)
 dim(diffSig_deseq2)
 head(diffSig_deseq2)
 summary(diffSig_deseq2)
 sum(complete.cases(diffSig_deseq2))
+diffSig_deseq2$status <- ifelse(diffSig_deseq2$log2FoldChange > 0, 'UP', 'DOWN')
+head(diffSig_deseq2)
+diffSig_deseq2 <- data.frame(diffSig_deseq2)
+diffSig_deseq2$ENSL <- rownames(diffSig_deseq2)
+diffSig_deseq2 <- arrange(diffSig_deseq2, status, log2FoldChange)
 write.csv(diffSig_deseq2, file= "./result/diffSig_DESeq2.csv")
+
+
+
+
+## 2.3.1 返回标准化的数据
+normalized_counts <- counts(dds, normalized=TRUE)
+head(normalized_counts)[,1:3]
+# 根据基因在不同的样本中表达变化的差异程度mad值对数据排序，差异越大的基因排位越前。
+normalized_counts_mad <- apply(normalized_counts, 1, mad)
+normalized_counts_mad[1:4]
+normalized_counts <- normalized_counts[order(normalized_counts_mad, decreasing=T), ]
+write.csv(normalized_counts, file="./result_RNAseq/exprs_ESCC_DESeq2_normalized.csv")
+
+## 2.3.2 log转换后的结果
+rld <- vst(dds, blind=FALSE)
+rlogMat <- assay(rld)
+rlogMat <- rlogMat[order(normalized_counts_mad, decreasing=T), ]
+write.csv(rlogMat, file="./result_RNAseq/exprs_ESCC_DESeq2_normalized_vst.csv")
+
+# 热图绘制
+hmcol <- colorRampPalette(brewer.pal(9, "GnBu"))(100) # 生成颜色
+pearson_cor <- as.matrix(cor(rlogMat, method="pearson")) # 计算相关性pearson correlation
+hc <- hcluster(t(rlogMat), method="pearson") # 层级聚类
+# 
+pdf("./result_RNAseq/exprs_ESCC_DESeq2_normalized_vst.pdf", pointsize=10)
+heatmap.2(pearson_cor, Rowv=as.dendrogram(hc), symm=T, 
+          trace="none", col=hmcol, margins=c(11,11), 
+          main="The pearson correlation of each sample")
+dev.off()
+
+pca_data <- plotPCA(rld, intgroup=c("group_list"), returnData=T, ntop=5000)
+
 
 # -----------------------------
 # 3. 绘图.1
 # -----------------------------
 #volcano
-pdf(file="./result/vol.pdf")
-xMax=max(-log10(res_d$padj))+1
-yMax=14
-plot(-1*log10(res_d$padj),res_d$log2FoldChange, xlab="-log10(FDR)",ylab="logFC",
-     main="Volcano", xlim=c(0,xMax),ylim=c(-yMax,yMax),yaxs="i",pch=20, cex=0.4)
-diffSub=res_d[res_d$padj<0.05 & res_d$log2FoldChange>1,]
-points(-log10(diffSub$padj), diffSub$log2FoldChange, pch=20, col="red",cex=0.4)
-diffSub=res_d[res_d$padj<0.05 & res_d$log2FoldChange<(-1),]
-points(-log10(diffSub$padj), diffSub$log2FoldChange, pch=20, col="green",cex=0.4)
-abline(h=0, lty=2, lwd=3)
+library(ggplot2)
+res_df <- data.frame(na.omit(res_d))
+res_df$threshold <- as.factor(
+  ifelse(res_df$padj < 0.05 & abs(res_df$log2FoldChange) >= 1,
+         ifelse(res_df$log2FoldChange > 1 ,'Up','Down'),'Not'))
+4/0.618
+pdf(file = './result_RNAseq/volcano.pdf', width = 5, height = 6.47)
+ggplot(data = res_df, aes(x = log2FoldChange, y = -log10(padj),
+                              colour=threshold, fill=threshold)) +
+  geom_point(alpha=0.4, size=1.2) +
+  scale_color_manual(values=c("blue", "black","red"))+
+  scale_x_continuous(expand = c(0,0)) +
+  theme_bw(base_size = 12, base_family = "Times") +
+  xlim(c(-9,9)) + ylim(c(0, 60)) +
+  geom_vline(xintercept=c(-1,1),lty=4,col="grey",lwd=0.7)+
+  geom_hline(yintercept =-log10(0.05) , lty=4,col="grey",lwd=0.7)+
+  theme(legend.position=c(0.99,0.99), legend.justification = c(1,1),
+        panel.grid=element_blank(),
+        legend.title = element_blank(),
+        legend.text= element_text(face="bold", color="black",family = "Times", size=8),
+        plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(face="bold", color="black", size=12),
+        axis.text.y = element_text(face="bold",  color="black", size=12),
+        axis.title.x = element_text(face="bold", color="black", size=12),
+        axis.title.y = element_text(face="bold",color="black", size=12))+
+  labs(x="log2 (fold change)", y="-log10 (p-value)",title = 'volcano')
 dev.off()
 
 # heatmap
-res_de_up_top20_id <- as.vector(head(res_de_up$ID,20))
-res_de_dw_top20_id <- as.vector(head(res_de_dw$ID,20))
-
-red_de_top20 <- c(res_de_up_top20_id, res_de_dw_top20_id)
-red_de_top20
-
 r_expr <- normalized_counts[rownames(normalized_counts) %in% 
-                              diffSig_deseq2_df$EnID[1:100],]
+                              c(diffSig_deseq2$ENSL[1:100], tail(diffSig_deseq2$ENSL,100)),]
 r_expr <- na.omit(r_expr)
-library(gplots)
 pdf(file="./result/heatmap.pdf",width=90,height=60)
 par(oma=c(10,3,3,7))
-hmExp=log10(r_expr+0.001)
-hmMat=as.matrix(hmExp)
+hmMat=as.matrix(log10(r_expr+0.001))
 heatmap.2(hmMat,col='greenred',trace="none")
 dev.off()
+
+library(pheatmap)
+colnames(r_expr)
+length(colnames(r_expr)) - sum(grepl('11A', colnames(r_expr)))
+Type <- c(rep("tumor",81), rep("normal",11))    #修改正常和癌症样品数目
+names(Type) <- colnames(r_expr)
+Type <- as.data.frame(Type)
+
+pheatmap(hmMat, annotation=Type, 
+         color = colorRampPalette(c("green", "black", "red"))(50),
+         cluster_cols =F, fontsize_row=5, fontsize_col=4)
+
+
+
+heatmap <- data[rownames(data) %in% rownames(outDiff),]
+write.table(heatmap,file="../result/Methy_heatmap.txt", 
+            sep="\t", row.names=T, quote=F)
+
+Type <- c(rep("normal",16),rep("tumor",96))    #修改正常和癌症样品数目
+names(Type) <- colnames(heatmap)
+Type <- as.data.frame(Type)
+
+tiff(file="../result/Methy_heatmap.tiff", width = 45, height =70,
+     units ="cm", compression="lzw", bg="white", res=300)
+pheatmap(heatmap, annotation=Type, 
+         color = colorRampPalette(c("green", "black", "red"))(50),
+         cluster_cols =F, fontsize_row=5, fontsize_col=4)
+dev.off()
+
+
 
 # 注释
 annot[1:3,1:3]
