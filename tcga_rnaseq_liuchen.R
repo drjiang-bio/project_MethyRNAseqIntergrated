@@ -23,7 +23,7 @@ gdc_sheet <- read.csv('./origin/esca_gdc_sheet_pathology.csv')
 
 ## 自定义函数1：批量读入gdc下载的数据（rnaseq_counts,fpkm）
 load_tcga_gz <- function(lujing, guize = 'counts.gz$') {
-  ## path为tcga下载的原始文件解压后的目录（其下一级目录为gz文件所在的文件夹）
+  ## lujing为tcga下载的原始文件解压后的目录（其下一级目录为gz文件所在的文件夹）
   ## guize 为数据文件的提取规则
   ## 例如：data/文件夹/gz
   
@@ -61,7 +61,7 @@ write.csv(exprs, file = './result_RNAseq/exprs.csv')
 # ------ 1.2 筛选鳞癌数据,构建分类表
 sub_sheet <- filter(gdc_sheet, pathology == 'ESCC'| Sample.Type == 'Solid Tissue Normal' )
 sub_sheet <- sub_sheet[, c(1,8,9)]
-
+sub_sheet[1:3,1:3]
 sub_sheet$Sample.Type <- ifelse(grepl('Normal', sub_sheet$Sample.Type), 
                                 'Normal', 'ESCC')
 # sub_sheet$Sample.ID <- gsub('-', '\\.', sub_sheet$Sample.ID)
@@ -77,14 +77,6 @@ group$class <- factor(group$class)
 save(group, file = './result_RNAseq/exprs_ESCC_pheno.RData')
 write.csv(group, file = './result_RNAseq/exprs_ESCC_pheno.csv')
 
-#
-annot <- read.csv('./origin/hgnc_complete_subset_complete.csv')
-annot <- dplyr::arrange(annot, ensembl_gene_id)
-# 
-annot <- read.csv('./origin/esemble_symbol.csv')
-annot <- dplyr::arrange(annot, gene_id)
-
-
 # ----------------------------------------------
 # 2.差异分析DESeq2
 # ----------------------------------------------
@@ -97,7 +89,6 @@ register(MulticoreParam(6))
 library(amap)
 library(gplots)
 library(RColorBrewer)
-
 
 load('./result_RNAseq/exprs_ESCC.RData')
 load('./result_RNAseq/exprs_ESCC_pheno.RData')
@@ -117,37 +108,40 @@ dds <- DESeqDataSetFromMatrix(countData = escc,
 dds <- DESeq(dds, parallel = T)
 save(dds, file = './result_RNAseq/dds_ESCC.RData')
 
-## 2.3.4  差异分析
+## 2.3.1  DESeq2 差异分析
 res_d <- results(dds, contrast=c("group_list", "ESCC", "Normal"))
 res_d <- res_d[order(res_d$pvalue),]
 head(res_d)
 summary(res_d)
 dim(res_d)
-
-# 所有结果先进行输出
+# 结果输出
 res_d[1:3,1:3]
+res_df <- data.frame(res_d)
+res_dfsig <- res_df[res_df$padj < 0.05 | res_df$pvalue < 0.05, ]
 save(res_d, file = './result_RNAseq/diffAll_DESeq2.RData')
-write.csv(res_d, file="./result_RNAseq/diffAll_DESeq2.csv")
+write.csv(res_dfsig, file="./result_RNAseq/diffSig_p_fdr_DESeq2.csv")
 
-table(res_d$padj<0.05)
-table(res_d$pvalue < 0.05)
+## 2.3.2 edgeR 差异分析
+library(edgeR)
+load('./result_RNAseq/exprs_ESCC.RData')
+# 设置分组信息，去除低表达量的gene以及做TMM标准化
+nrow(escc)
+escc <- escc[rowSums(cpm(escc) > 1) >= 2,]
+names(escc)
+group_list_e <- factor(c(rep("ESCC",81), rep("Normal",11)))
+res_d_edgeR <- DGEList(counts = escc, group = group_list_e)
+res_d_edgeR <- calcNormFactors(res_d_edgeR) 
+res_d_edgeR <- estimateCommonDisp(res_d_edgeR)
+res_d_edgeR <- estimateTagwiseDisp(res_d_edgeR)
+# 结果输出
+et <- exactTest(res_d_edgeR)
+tTag <- topTags(et, n=nrow(res_d_edgeR))
+tTag <- as.data.frame(tTag)
+tTagSig <- tTag[tTag$PValue < 0.05 | tTag$FDR < 0.05,]
+table(tTag$FDR < 0.05 & abs(tTag$logFC) > 1)
+write.csv(tTagSig,file = "./result_RNAseq/diffSig_p_fdr_edgeR.csv")
 
-diffSig_deseq2 <-subset(res_d, padj < 0.05 & abs(log2FoldChange) > 1)
-dim(diffSig_deseq2)
-head(diffSig_deseq2)
-summary(diffSig_deseq2)
-sum(complete.cases(diffSig_deseq2))
-diffSig_deseq2$status <- ifelse(diffSig_deseq2$log2FoldChange > 0, 'UP', 'DOWN')
-head(diffSig_deseq2)
-diffSig_deseq2 <- data.frame(diffSig_deseq2)
-diffSig_deseq2$ENSL <- rownames(diffSig_deseq2)
-diffSig_deseq2 <- arrange(diffSig_deseq2, status, log2FoldChange)
-write.csv(diffSig_deseq2, file= "./result/diffSig_DESeq2.csv")
-
-
-
-
-## 2.3.1 返回标准化的数据
+## 2.3.3 返回标准化的数据(DESeq2)
 normalized_counts <- counts(dds, normalized=TRUE)
 head(normalized_counts)[,1:3]
 # 根据基因在不同的样本中表达变化的差异程度mad值对数据排序，差异越大的基因排位越前。
@@ -175,19 +169,21 @@ dev.off()
 
 pca_data <- plotPCA(rld, intgroup=c("group_list"), returnData=T, ntop=5000)
 
-
 # -----------------------------
-# 3. 绘图.1
+# 3 绘图
 # -----------------------------
-#volcano
+# 3.1 volcano
 library(ggplot2)
-res_df <- data.frame(na.omit(res_d))
-res_df$threshold <- as.factor(
-  ifelse(res_df$padj < 0.05 & abs(res_df$log2FoldChange) >= 1,
-         ifelse(res_df$log2FoldChange > 1 ,'Up','Down'),'Not'))
-4/0.618
+library(DMwR)
+vol_df <- data.frame(na.omit(res_d))
+vol_df[complete.cases(vol_df),] %>% nrow 
+
+vol_df$threshold <- as.factor(
+  ifelse(vol_df$padj < 0.05 & abs(vol_df$log2FoldChange) >= 1,
+         ifelse(vol_df$log2FoldChange > 1 ,'Up','Down'),'Not'))
+
 pdf(file = './result_RNAseq/volcano.pdf', width = 5, height = 6.47)
-ggplot(data = res_df, aes(x = log2FoldChange, y = -log10(padj),
+ggplot(data = vol_df, aes(x = log2FoldChange, y = -log10(padj),
                               colour=threshold, fill=threshold)) +
   geom_point(alpha=0.4, size=1.2) +
   scale_color_manual(values=c("blue", "black","red"))+
@@ -208,7 +204,7 @@ ggplot(data = res_df, aes(x = log2FoldChange, y = -log10(padj),
   labs(x="log2 (fold change)", y="-log10 (p-value)",title = 'volcano')
 dev.off()
 
-# heatmap
+# 3.2 heatmap
 r_expr <- normalized_counts[rownames(normalized_counts) %in% 
                               c(diffSig_deseq2$ENSL[1:100], tail(diffSig_deseq2$ENSL,100)),]
 r_expr <- na.omit(r_expr)

@@ -3,24 +3,33 @@
 #  一 甲基化数据读入与整合
 # -----------------------------
 rm(list = ls());gc()
-setwd('/media/jun/Sync/TCGA_data/ESCA/methylation/download_test')
 library(data.table)
+library(magrittr)
 library(parallel)
 options(stringsAsFactors = F)
+projectwd <- getwd() %>% print
+methyd <- 'origin/methylation/'
 
 # data process
-squasheet <- read.csv('../gdc_sample_sheet.2018-11-14_primarysite_squamous.csv')
-file_gz <- list.files(path = './', pattern = 'hg38.txt$', recursive = T)
-subfile <- sapply(strsplit(file_gz, '/'), function(x) x[[2]])
-subfilegz <- file_gz[subfile %in% squasheet$File.Name]
-# self function
+squasheet <- read.csv('./origin/methylation/gdc_sample_sheet.2018-11-14_primarysite_squamous.csv')
+fpath <- paste0(projectwd, '/', methyd, 'download/') %>% print
+squasheet$File.Name
 
-read_methy <- function(file) {
-  # file 为文件名，包括上一级目录名，最好上二级目录设置为过工作目录
+read_methy <- function(lujing) {
+  # ## lujing为tcga下载的原始文件解压后的目录（其下一级目录为txt文件所在的文件夹）
+  # 此函数依赖函数外的sheet文件(squasheet)
+  # 本函数返回值即为下一个函数的输入值, 
+  # 返回一个数据框，第一列为位点，第二列为symbol，余下为beta值
+  file_gz <- list.files(path = lujing, pattern = 'hg38.txt$', recursive = T)
+  subfile <- sapply(strsplit(file_gz, '/'), function(x) x[[2]])
+  # 依据sheet表中提取对应文件
+  subfilegz <- file_gz[subfile %in% squasheet$File.Name]
+  file <- paste0(lujing, subfilegz) # 获取其绝对路径
+  
   res <- c()
   ii = 0
   for (f in file) {
-    n <- gregexpr("TCGA", f)[[1]][1]
+    n <- gregexpr("TCGA-", f)[[1]][1]
     nam <- substr(f, n, n+15)
     re <- fread(f, sep = '\t', fill = T, header = T, 
                 check.names = F)[, 2]
@@ -37,6 +46,7 @@ methy_pre <- function(methy, method = 2) {
   # methy 为数据框，第一列为位点，第二列为symbol，余下为beta值
   # method = 2 : 取所有symbol; method = 1 : 取symbol列第一个
   # unique the same symbol-duplicated(still have multi symbol per row)
+  # 本函数返回值即为处理好的甲基化数据
   if (method == 2) {
     symbol_uni <- sapply(strsplit(methy[,2],';'), unique)
     all_name <- unlist(symbol_uni)
@@ -73,12 +83,16 @@ methy_pre <- function(methy, method = 2) {
   return(result)
 }
 
-sfmethy <- read_methy(subfilegz)
+sfmethy <- read_methy(lujing = fpath)
+sfmethy[1:5,1:4]
 methyarraydf <- methy_pre(sfmethy)
 methyarraydf[1:5, 1:3]
+methyarraydf1 <- methy_pre(sfmethy, method = 1)
+methyarraydf1[1:5, 1:3]
 
-save(sfmethy, file = '../result3/methylation_read_orginial.RData')
-write.csv(methyarraydf, file = '../result3/methyarray_pre.csv', row.names = T)
+save(sfmethy, file = './result_Methylation/methylation_read_orginial.RData')
+write.csv(methyarraydf, file = './result_Methylation/methylation_pre_all.csv')
+write.csv(methyarraydf1, file = './result_Methylation/methylation_pre_1.csv')
 
 # ------------------------
 # 二 甲基化数据处理
