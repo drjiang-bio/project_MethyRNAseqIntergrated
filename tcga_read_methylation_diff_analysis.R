@@ -98,59 +98,79 @@ write.csv(methyarraydf1, file = './result_Methylation/methylation_pre_1.csv')
 # 二 甲基化数据处理
 # ------------------------
 # 差异分析
+rm(list = ls());gc()
+library(magrittr)
 library(limma)
 library(DMwR)
+options(stringsAsFactors = F)
 # 文件准备：
+methyarraydf <- read.csv('./result_Methylation/methylation_pre_all.csv', 
+                         check.names = F, row.names = 1)
+methyarraydf <- methyarraydf[-1,]
 methyarraydf[1:5,1:3]
+# 事先排序
 rt <- methyarraydf[,order(substr(names(methyarraydf),14, 16), decreasing = T)]
+substr(names(rt),14, 16)
+# 事先计算
 sum(grepl('11', substr(names(rt),14, 16)))
-#
-normalNum <- sum(grepl('11', substr(names(rt),14, 16)))          #正常样品的数目
-tumorNum <- ncol(rt) - 16           #癌症样品的数目
-grade <- c(rep(1,normalNum),rep(2,tumorNum))
+normalNum <- sum(grepl('11', substr(names(rt),14, 16)))   # 正常样品的数目
+tumorNum <- ncol(rt) - normalNum          #癌症样品的数目
+
 Type <- c(rep("Normal",normalNum), rep("Tumor",tumorNum))
 
 rt[1:3,1:3]
-rt <- rt[-c(1, 2), ]
 nrow(rt)
 data <- rt[rowMeans(rt)>0,]
 nrow(data)
+data[1:3,1:3]
 
 #矫正数据
 data <- normalizeBetweenArrays(data)
-write.table(data,file="../result/normalizeMethy.txt",sep="\t",row.names=T,quote=F)
+write.csv(data, file="./result_Methylation/methylation_pre_all_normalize.csv")
 
 #差异分析
-testl_ll <- apply(data, 1, function(x) {
-  rt <- rbind(expression=x,grade=grade)
-  rt <- as.matrix(t(rt))
-  wilcoxTest <- wilcox.test(expression ~ grade, data=rt)
-  
-  normalGeneMeans=mean(x[1:normalNum])
-  tumorGeneMeans=mean(x[(normalNum+1):ncol(data)])
-  logFC=log2(tumorGeneMeans)-log2(normalGeneMeans)
-  
-  normalMed=median(x[1:normalNum])
-  tumorMed=median(x[(normalNum+1):ncol(data)])
-  diffMed=tumorMed-normalMed
-  if( ((logFC>0) & (diffMed>0)) | ((logFC<0) & (diffMed<0)) ){
-    return(c(normalGeneMeans, tumorGeneMeans, logFC, wilcoxTest$p.value))
-  }
-})
-outTab2 <- data.frame(t(do.call(cbind, testl_ll)))
-names(outTab2) <- c('normalGeneMeans', 'tumorGeneMeans', 'logFC', 'pvalue')
+methy_diff <- function(data_methy, normalNum, tumorNum) {
+  # 本函数需对beta矩阵 事先排序, 将正常样本至于矩阵前列
+  # 本函数需 事先计算 对照（正常）与实验组（癌症）的样本数目
+  # dara_methy:处理好的基因总体平均甲基化beta值矩阵，列为样本，行为基因;
+  # normalNum: 正常样品的数目; tumorNum: 癌症样品的数目
+  # grade: 样本分类信息，使用数字向量(1,1,2,2,2)，对应矩阵样本，须正常样本在前列
+  grade <- c(rep(1, normalNum), rep(2,tumorNum))
+  res_l <- apply(data_methy, 1, function(x) {
+    rt <- rbind(expression=x, grade=grade)
+    rt <- as.matrix(t(rt))
+    wilcoxTest <- wilcox.test(expression ~ grade, data=rt)
+    
+    normalGeneMeans = mean(x[1:normalNum])
+    tumorGeneMeans = mean(x[(normalNum+1):ncol(data_methy)])
+    logFC = log2(tumorGeneMeans)-log2(normalGeneMeans)
+    
+    normalMed = median(x[1:normalNum])
+    tumorMed = median(x[(normalNum+1):ncol(data_methy)])
+    diffMed = tumorMed - normalMed
+    if( ((logFC>0) & (diffMed>0)) | ((logFC<0) & (diffMed<0)) ){
+      return(c(normalGeneMeans, tumorGeneMeans, logFC, wilcoxTest$p.value))
+    }
+  })
+  res_df <- data.frame(t(do.call(cbind, res_l)))
+  names(res_df) <- c('normalGeneMeans', 'tumorGeneMeans', 'logFC', 'pvalue')
+  #对p值进行矫正
+  fdr <- p.adjust(as.numeric(as.vector(res_df[,'pvalue'])), method="fdr")
+  res_df <- cbind(res_df, FDR=fdr)
+  return(res_df)
+}
 
-#对p值进行矫正
-fdr <- p.adjust(as.numeric(as.vector(outTab2[,'pvalue'])), method="fdr")
-outTab2 <- cbind(outTab2, FDR=fdr)
-#输出所有基因的甲基化差异情况
-write.csv(outTab2, file="../result3/Methy_Genediff.txt", row.names=T)
-
+res_methy <- methy_diff(data, 16, 96)
+methy_difsig <- res_methy[res_methy$pvalue < 0.05 | res_methy$FDR < 0.05, ]
+write.csv(methy_difsig, 
+          file="./result_Methylation/diff_gene_methylation_p&fdr.csv")
 #输出差异甲基化的基因
-index <- abs(outTab2$logFC) > 1 & outTab2$FDR < 0.05
-diffmethy_gene <- outTab2[index, ]
-write.csv(diffmethy_gene, file="../result3/Methy_GenediffSig.csv", row.names=T)
+index <- abs(methy_difsig$logFC) > 1 & methy_difsig$FDR < 0.05
+difsig_fc <- methy_difsig[index, ]
+write.csv(difsig_fc, 
+          file="./result_Methylation/diff_gene_methylation_fdr&fc2.csv")
 
+#################################################################################
 #输出热图数据文件
 heatmap <- data[rownames(data) %in% rownames(diffmethy_gene),]
 write.csv(heatmap,file="../result3/Methy_heatmap.csv", row.names=T)
