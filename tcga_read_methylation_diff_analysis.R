@@ -6,7 +6,10 @@ rm(list = ls());gc()
 library(data.table)
 library(magrittr)
 library(parallel)
+library(limma)
+library(DMwR)
 options(stringsAsFactors = F)
+
 projectwd <- getwd() %>% print
 methyd <- 'origin/methylation/'
 
@@ -99,10 +102,7 @@ write.csv(methyarraydf1, file = './result_Methylation/methylation_pre_1.csv')
 # ------------------------
 # 差异分析
 rm(list = ls());gc()
-library(magrittr)
-library(limma)
-library(DMwR)
-options(stringsAsFactors = F)
+
 # 文件准备：
 methyarraydf <- read.csv('./result_Methylation/methylation_pre_all.csv', 
                          check.names = F, row.names = 1)
@@ -127,6 +127,9 @@ data[1:3,1:3]
 #矫正数据
 data <- normalizeBetweenArrays(data)
 write.csv(data, file="./result_Methylation/methylation_pre_all_normalize.csv")
+
+data <- read.csv("./result_Methylation/methylation_pre_all_normalize.csv", 
+                 row.names = 1)
 
 #差异分析
 methy_diff <- function(data_methy, normalNum, tumorNum) {
@@ -170,8 +173,9 @@ difsig_fc <- methy_difsig[index, ]
 write.csv(difsig_fc, 
           file="./result_Methylation/diff_gene_methylation_fdr&fc2.csv")
 
-#################################################################################
+# ------------------------------------------------------------
 #输出热图数据文件
+
 heatmap <- data[rownames(data) %in% rownames(diffmethy_gene),]
 write.csv(heatmap,file="../result3/Methy_heatmap.csv", row.names=T)
 library(pheatmap)   
@@ -184,40 +188,3 @@ pheatmap(heatmap, annotation=Type,
          color = colorRampPalette(c("green", "black", "red"))(50),
          cluster_cols =F, fontsize_row=5, fontsize_col=4)
 dev.off()
-
-# ---------------------
-# 注释
-# ---------------------
-library(magrittr)
-outTab2 <- read.csv(file="../result3/Methy_Genediff.txt", row.names=1)
-diffmethy_gene <- read.csv(file="../result3/Methy_GenediffSig.csv", row.names=1)
-methyWD <-getwd()
-rnaseqWD <- '/media/jun/Sync/TCGA_data/ESCA/rnaseq'
-setwd(rnaseqWD)
-
-annotHGNC <- read.csv('../hgnc_complete_subset_complete.csv')
-intersect(rownames(outTab2), annotHGNC$symbol) %>% length()
-symbolOmit <- setdiff(annotHGNC$symbol, row.names(outTab2))
-# 
-annotENSM <- read.csv('../esemble_symbol.csv')
-intersect(rownames(outTab2), annotENSM$gene_name) %>% length()
-
-annotGPL <- fread('../methylation/GPL13534-11288.txt')
-annotGPL[1:3,1:3]
-annotGPL <- dplyr::arrange(annotGPL, ID)
-
-methy <- fread('../methylation/download_test/02313093-32fa-4cda-a0ab-ff4432900a20/jhu-usc.edu_ESCA.HumanMethylation450.10.lvl-3.TCGA-VR-A8ET-01A-11D-A409-05.gdc_hg38.txt')
-methy[1:3,1:3]
-methy <- dplyr::arrange(methy, `Composite Element REF`)
-all(annotGPL$ID == methy$`Composite Element REF`)
-names(annotGPL)
-annotGPL$ID %>% {head(., 20)}
-annotGPL$UCSC_RefGene_Name %>% (function(x) head(x, 20))
-annotGPL$UCSC_RefGene_Name %>% {head(., 20)}
-
-methy$`Composite Element REF` %>% {head(., 20)}
-methy$Gene_Symbol %>% {head(., 20)}
-
-sapply(strsplit(methy$Gene_Symbol, ';'), unique) %>% {head(., 20)}
-sapply(strsplit(annotGPL$UCSC_RefGene_Name, ';'), unique) %>% {head(., 20)}
-

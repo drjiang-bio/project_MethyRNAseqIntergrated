@@ -244,23 +244,6 @@ dev.off()
 
 
 
-# 注释
-annot[1:3,1:3]
-escc[1:3,1:3]
-head(diffSig_deseq2)
-diffSig_deseq2$symbol <- annot[match(rownames(diffSig_deseq2), annot[,1]), 2]
-sum(is.na(diffSig_deseq2$symbol))
-diffSig_deseq2 <- diffSig_deseq2[!is.na(diffSig_deseq2$symbol), ]
-
-sum(duplicated(diffSig_deseq2$symbol))
-diffSig_deseq2_df <- data.frame(diffSig_deseq2, row.names = diffSig_deseq2@rownames)
-diffSig_deseq2_df$EnID <- rownames(diffSig_deseq2_df)
-diffSig_deseq2_df <- dplyr::arrange(diffSig_deseq2_df, desc(abs(log2FoldChange)))
-diffSig_deseq2_df <- diffSig_deseq2_df[!duplicated(diffSig_deseq2_df$symbol), ]
-write.csv(diffSig_deseq2_df, file= "./result/diffSig_DESeq2_annot.csv", 
-          row.names = F, quote = F)
-length(intersect(annot[,1], row.names(outTab2)))
-
 # ----------------------
 # 4. 绘图.2
 # ----------------------
@@ -296,122 +279,41 @@ venn2 <- Venn(list(diffSigDown$symbol, TSG$GeneSymbol, rownames(outDiffUP)))
 intersect(diffSigUP$symbol, outDiffDown)
 intersect(diffSigDown$symbol, TSG$GeneSymbol)
 
-# ------------------------
-# 二 甲基化数据处理
-# ------------------------
+# ---------------------------------------
+# # 注释
+# ---------------------------------------
 rm(list = ls());gc()
-setwd('/media/jun/Sync/TCGA_data/ESCA/methylation/download_test')
-options(stringsAsFactors = F)
+diffSig_edgeR <- read.csv("./result_RNAseq/diffSig_p_fdr_edgeR.csv",
+                          check.names = F, row.names = 1)
+annot_EG <- read.csv('./origin/esemble_symbol.csv')
+annot_EG[1:3,1:3]
+index <- abs(diffSig_edgeR$logFC) > 1 & diffSig_edgeR$FDR < 0.05
+difsig_fc <- diffSig_edgeR[index, ]
 
-# 文件准备：
-methysheet <- read.table('./gdc_sample_sheet.2018-11-14.tsv', 
-                         header = T, sep = '\t', fill = T)
-rna_sheet <- read.csv('/media/jun/Sync/TCGA_data/ESCA/esca_gdc_sheet_pathology.csv')
-clinical <- read.table('../clinical.tsv', header = T, sep = '\t', fill = T)
+difsig_fc$symbol <- annot_EG[match(rownames(difsig_fc), annot_EG[,1]), 2]
 
-# 添加病理类型
-methysheet <- dplyr::arrange(methysheet, Sample.ID)
-subRNAsheet <- rna_sheet[, c(1,8,9)]
-subClicnical <- clinical[, c(1, 2, 3)]
+duplicated(difsig_fc$symbol) %>% sum
+difsig_fc[duplicated(difsig_fc$symbol),]
+is.na(difsig_fc$symbol) %>% sum
 
-methysheet$Case.ID %in% subClicnical$submitter_id
-sum(duplicated(subClicnical$submitter_id))
-methysheet$primaryType <- clinical[match(methysheet$Case.ID, 
-                                         clinical$submitter_id), 11]
-write.csv(methysheet, file = '../gdc_sample_sheet.2018-11-14_primarysite.csv', 
-          row.names = F, quote = F)
-# 提取鳞癌数据
-index <- grepl('quamous', methysheet$primaryType) | grepl('Normal', methysheet$Sample.Type)
-subMETHYsheet <- methysheet[index, ]
-subMETHYsheet <- dplyr::arrange(subMETHYsheet, Sample.Type)
-write.csv(subMETHYsheet, row.names = F, quote = F,
-          file = '../gdc_sample_sheet.2018-11-14_primarysite_squamous.csv')
-
-
-methyarry <- read.table('./geneMethy.txt', header = T, 
-                        sep = '\t', row.names = 1, check.names = F) 
-methyarry[1:5,1:3]
-names(methyarry) <- substr(names(methyarry), 1, 16)
-squasheet <- read.csv('../gdc_sample_sheet.2018-11-14_primarysite_squamous.csv')
-table(squasheet$Sample.Type)
-squasheet <- dplyr::arrange(squasheet, desc(Sample.Type))
-
-submethy <- methyarry[, squasheet$Sample.ID]
-substr(names(submethy),14,16)
-
-# 差异分析
-library(limma)
-normalNum=16          #正常样品的数目
-tumorNum=96           #癌症样品的数目
-#读取数据
-grade <- c(rep(1,normalNum),rep(2,tumorNum))
-Type <- c(rep("Normal",normalNum),rep("Tumor",tumorNum))
-
-rt <- submethy
-rt[1:3,1:3]
-rt <- as.matrix(rt)
-data <- rt[rowMeans(rt)>0,]
-
-#矫正数据
-data <- normalizeBetweenArrays(data)
-write.table(data,file="../result/normalizeMethy.txt",sep="\t",row.names=T,quote=F)
-
-#差异分析
-testl_ll <- apply(data, 1, function(x) {
-  rt <- rbind(expression=x,grade=grade)
-  rt <- as.matrix(t(rt))
-  wilcoxTest <- wilcox.test(expression ~ grade, data=rt)
-  
-  normalGeneMeans=mean(x[1:normalNum])
-  tumorGeneMeans=mean(x[(normalNum+1):ncol(data)])
-  logFC=log2(tumorGeneMeans)-log2(normalGeneMeans)
-  
-  normalMed=median(x[1:normalNum])
-  tumorMed=median(x[(normalNum+1):ncol(data)])
-  diffMed=tumorMed-normalMed
-  if( ((logFC>0) & (diffMed>0)) | ((logFC<0) & (diffMed<0)) ){
-    return(c(normalGeneMeans, tumorGeneMeans, logFC, wilcoxTest$p.value))
-  }
+difsig_fc <- na.omit(difsig_fc)
+difsig_fc2 <- data.frame(mclapply(difsig_fc, function(x) {
+  dt <- tapply(x, difsig_fc[,5], median, na.rm = T)
+  }, mc.cores = 6), check.names = F)
+difsig_fc2$status <- sapply(difsig_fc2$logFC, function(x) {
+  ifelse(x > 0, 'UP', 'DOWN')
 })
-outTab2 <- data.frame(t(do.call(cbind, testl_ll)))
-names(outTab2) <- c('normalGeneMeans', 'tumorGeneMeans', 'logFC', 'pvalue')
+difsig_fc2 <- dplyr::arrange(difsig_fc2, logFC, status)
 
-all(row.names(outTab) == row.names(outTab2))
-all(round(outTab[,4],3) == round(outTab2[,4],3))
-#对p值进行矫正
-pValue=outTab2[,'pvalue']
-fdr=p.adjust(as.numeric(as.vector(pValue)),method="fdr")
-outTab2=cbind(outTab2, FDR=fdr)
-#输出所有基因的甲基化差异情况
-write.table(outTab2, file="../result/Methy_Genediff.txt", 
-            sep="\t", row.names=T, quote=F)
+write.csv(difsig_fc2, file= "./result_interg/diffSig_p_fdr_edgeR_fc2_annot.csv")
 
-#输出差异甲基化的基因
-index <- abs(outTab2$logFC) > 1 & outTab2$FDR < 0.05
-outDiff=outTab2[index, ]
-write.table(outDiff, file="../result/Methy_GenediffSig.txt",
-            sep="\t", row.names=T, quote=F)
-
-#输出热图数据文件
-heatmap <- data[rownames(data) %in% rownames(outDiff),]
-write.table(heatmap,file="../result/Methy_heatmap.txt", 
-            sep="\t", row.names=T, quote=F)
-library(pheatmap)
-Type <- c(rep("normal",16),rep("tumor",96))    #修改正常和癌症样品数目
-names(Type) <- colnames(heatmap)
-Type <- as.data.frame(Type)
-
-tiff(file="../result/Methy_heatmap.tiff", width = 45, height =70,
-     units ="cm", compression="lzw", bg="white", res=300)
-pheatmap(heatmap, annotation=Type, 
-         color = colorRampPalette(c("green", "black", "red"))(50),
-         cluster_cols =F, fontsize_row=5, fontsize_col=4)
-dev.off()
-
-# 
-
-<<<<<<< HEAD
-=======
+###
+dif_methy <- read.csv("./result_Methylation/diff_gene_methylation_fdr&fc2.csv",
+                      row.names = 1, check.names = F)
+dif_methy$symbol <- rownames(dif_methy)
+inter_d <- intersect(rownames(dif_methy), difsig_fc2$symbol)
+inter_me_rna <- merge(difsig_fc2, dif_methy, by='symbol')
+write.csv(inter_me_rna, file = './result_interg/interg_methyRNAseq_diff.csv')
 
 
 
@@ -430,9 +332,3 @@ dev.off()
 
 
 
-
-
-
-
-
->>>>>>> e45fec05c38065d0e784263257e64dbee7d9d689
