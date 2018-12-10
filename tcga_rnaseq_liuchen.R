@@ -116,10 +116,7 @@ summary(res_d)
 dim(res_d)
 # 结果输出
 res_d[1:3,1:3]
-res_df <- data.frame(res_d)
-res_dfsig <- res_df[res_df$padj < 0.05 | res_df$pvalue < 0.05, ]
 save(res_d, file = './result_RNAseq/diffAll_DESeq2.RData')
-write.csv(res_dfsig, file="./result_RNAseq/diffSig_p_fdr_DESeq2.csv")
 
 ## 2.3.2 edgeR 差异分析
 library(edgeR)

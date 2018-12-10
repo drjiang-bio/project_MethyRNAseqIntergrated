@@ -102,6 +102,7 @@ write.csv(methyarraydf1, file = './result_Methylation/methylation_pre_1.csv')
 # ------------------------
 # 差异分析
 rm(list = ls());gc()
+library(limma)
 
 # 文件准备：
 methyarraydf <- read.csv('./result_Methylation/methylation_pre_all.csv', 
@@ -117,21 +118,25 @@ normalNum <- sum(grepl('11', substr(names(rt),14, 16)))   # 正常样品的数�
 tumorNum <- ncol(rt) - normalNum          #癌症样品的数目
 
 Type <- c(rep("Normal",normalNum), rep("Tumor",tumorNum))
+ID <- names(rt)
+Type <- data.frame(ID = ID, class = Type)
 
 rt[1:3,1:3]
 nrow(rt)
 data <- rt[rowMeans(rt)>0,]
 nrow(data)
 data[1:3,1:3]
+2^log[1:3,1:3]
 
 #矫正数据
 data <- normalizeBetweenArrays(data)
+log <- log2(data)
 write.csv(data, file="./result_Methylation/methylation_pre_all_normalize.csv")
 
 data <- read.csv("./result_Methylation/methylation_pre_all_normalize.csv", 
                  row.names = 1)
 
-#差异分析
+#差异分析1
 methy_diff <- function(data_methy, normalNum, tumorNum) {
   # 本函数需对beta矩阵 事先排序, 将正常样本至于矩阵前列
   # 本函数需 事先计算 对照（正常）与实验组（癌症）的样本数目
@@ -164,14 +169,45 @@ methy_diff <- function(data_methy, normalNum, tumorNum) {
 }
 
 res_methy <- methy_diff(data, 16, 96)
-methy_difsig <- res_methy[res_methy$pvalue < 0.05 | res_methy$FDR < 0.05, ]
-write.csv(methy_difsig, 
-          file="./result_Methylation/diff_gene_methylation_p&fdr.csv")
 #输出差异甲基化的基因
-index <- abs(methy_difsig$logFC) > 1 & methy_difsig$FDR < 0.05
-difsig_fc <- methy_difsig[index, ]
-write.csv(difsig_fc, 
-          file="./result_Methylation/diff_gene_methylation_fdr&fc2.csv")
+save(res_methy, file = "./result_Methylation/diff_gene_methylation_all.RData")
+diff_res <- res_methy[res_methy$FDR < 0.05 & abs(res_methy$logFC) > 0.5,]
+write.csv(res_methy, 
+          file="./result_Methylation/diff_gene_methylation_fdr_fc05.csv")
+
+# 差异分析2
+limma_diff <- function(eset, type, FC = 2, p=0.05) {
+  # eset, type 格式为 数据框（表达谱），注意检查数据格式
+  # eset 列为样本，行为探针； type 为两列，第一列为样本id, 第二列为类型
+  # 此函数只能用于分析两种类型
+  
+  # 1. 构建分类信息：1.核对分表表,2.提取实验分类信息
+  ## 从表达矩阵中挑选出分类表中有的样本
+  type <- type[match(colnames(log),type[, 1]),] 
+  type <- factor(type[, 2])
+  
+  # 2. 设计实验矩阵design及对比模型contrast.matrix
+  design <- model.matrix(~-1 + type)
+  duibi <- paste(colnames(design), collapse = ' - ')
+  contrast.matrix <- makeContrasts(contrasts = duibi,levels = design)
+  
+  # 3. 线性模型拟合，据对比模型行差值计算，贝叶斯检验
+  fit <- lmFit(eset, design)                          # g
+  fit1 <- contrasts.fit(fit, contrast.matrix)
+  fit2 <- eBayes(fit1)
+  
+  # 4. 检验结果报表及筛选
+  dif <- topTable(fit2, coef = duibi, n = nrow(fit2), lfc = log2(FC))
+  if (FC != 1) {
+    dif <- dif[dif[, 'P.Value'] < p, ]
+  }
+  attr(dif,duibi)
+  return(dif)
+}
+test <- limma_diff(log, Type, FC=2^0.5)
+write.csv(test, 
+          file="./result_Methylation/diff_gene_methylation_limma_fdr_fc05.csv")
+intersect(rownames(test), rownames(diff_res)) %>% length
 
 # ------------------------------------------------------------
 #输出热图数据文件
@@ -188,3 +224,61 @@ pheatmap(heatmap, annotation=Type,
          color = colorRampPalette(c("green", "black", "red"))(50),
          cluster_cols =F, fontsize_row=5, fontsize_col=4)
 dev.off()
+
+# -----------------------------------------------
+# 
+# -----------------------------------------------
+library(MethylMix)
+data(METcancer)
+data(METnormal)
+data(GEcancer)
+head(METcancer[, 1:4])
+head(METnormal)
+head(GEcancer[, 1:4])
+all(colnames(METcancer) == colnames(GEcancer))
+colnames(METnormal)
+all(rownames(METcancer) == rownames(GEcancer))
+all(rownames(METcancer) == rownames(METnormal))
+
+library(doParallel)
+cl <- makeCluster(5)
+registerDoParallel(cl)
+MethylMixResults <- MethylMix(METcancer, GEcancer, METnormal)
+stopCluster(cl)
+
+MethylMixResults$MethylationDrivers
+MethylMixResults$NrComponents
+MethylMixResults$MixtureStates
+MethylMixResults$MethylationStates[, 1:5]
+MethylMixResults$Classifications[, 1:5]
+
+plots <- MethylMix_PlotModel("MGMT", MethylMixResults, METcancer)
+plots$MixtureModelPlot
+
+plots <- MethylMix_PlotModel("MGMT", MethylMixResults, 
+                             METcancer, METnormal = METnormal)
+plots$MixtureModelPlot
+
+plots <- MethylMix_PlotModel("ZNF217", MethylMixResults, 
+                             METcancer, METnormal = METnormal)
+plots$MixtureModelPlot
+
+plots <- MethylMix_PlotModel("MGMT", MethylMixResults, 
+                             METcancer, GEcancer, METnormal)
+plots$MixtureModelPlot
+plots$CorrelationPlot
+
+plots_a <- list()
+for (gene in MethylMixResults$MethylationDrivers) {
+  plots_a[[gene]] <- MethylMix_PlotModel(gene, MethylMixResults, 
+                                         METcancer, GEcancer, METnormal)
+}
+
+opar <- par(no.readonly=T)
+par(mfrow=c(2,2))
+par(opar)
+
+
+
+
+
