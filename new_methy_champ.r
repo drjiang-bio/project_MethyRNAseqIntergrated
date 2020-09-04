@@ -239,7 +239,7 @@ splots <- lapply(gs, function(g){
 arrange_ggsurvplots(splots, print = TRUE,  
                     ncol = 2, nrow = 2)
 
-
+# go,kegg
 #rm(list = ls())
 #load(file = 'Rdata/step3.df_DMP.Rdata')
 library(clusterProfiler)
